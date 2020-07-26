@@ -1,3 +1,303 @@
+use log::{info, trace, warn};
+use xcb::xproto;
+use xkb;
+use xkbcommon_sys;
+
+struct App {
+    conn: xcb::Connection,
+    root: xcb::Window,
+    xkb_base_event: u8,
+    xkb_context: xkb::Context,
+    xkb_keymap: xkb::Keymap,
+    xkb_state: xkb::State,
+}
+
+impl App {
+    fn new() -> Self {
+        let (conn, screen_num) =
+            xcb::Connection::connect(None).expect("Could not make a xcb connection");
+
+        let setup = conn.get_setup();
+        let screen: xproto::Screen = setup.roots().nth(screen_num as usize).unwrap();
+
+        let root = screen.root();
+
+        conn.prefetch_extension_data(xcb::xkb::id());
+
+        let (first_event, _) = match conn.get_extension_data(xcb::xkb::id()) {
+            Some(r) => (r.first_event(), r.first_error()),
+            None => {
+                panic!("could not get xkb extension data");
+            }
+        };
+
+        {
+            let cookie = xcb::xkb::use_extension(
+                &conn,
+                xkb::x11::MIN_MAJOR_XKB_VERSION,
+                xkb::x11::MIN_MINOR_XKB_VERSION,
+            );
+            match cookie.get_reply() {
+                Ok(r) => {
+                    if !r.supported() {
+                        panic!(
+                            "required xcb-xkb-{}-{} is not supported",
+                            xkb::x11::MIN_MAJOR_XKB_VERSION,
+                            xkb::x11::MIN_MINOR_XKB_VERSION
+                        );
+                    }
+                }
+                Err(_) => {
+                    panic!("could not check if xkb is supported");
+                }
+            }
+        }
+
+        let mut major: u16 = 0;
+        let mut minor: u16 = 0;
+        let mut event_out: u8 = 0;
+        let mut error_out: u8 = 0;
+
+        pub fn setup_xkb_extension(
+            connection: &xcb::Connection,
+            major_xkb_version: u16,
+            minor_xkb_version: u16,
+            flags: xkbcommon_sys::xkb_x11_setup_xkb_extension_flags,
+            major_xkb_version_out: &mut u16,
+            minor_xkb_version_out: &mut u16,
+            base_event_out: &mut u8,
+            base_error_out: &mut u8,
+        ) -> bool {
+            unsafe {
+                xkbcommon_sys::xkb_x11_setup_xkb_extension(
+                    connection.get_raw_conn() as *mut _,
+                    major_xkb_version,
+                    minor_xkb_version,
+                    flags,
+                    major_xkb_version_out,
+                    minor_xkb_version_out,
+                    base_event_out,
+                    base_error_out,
+                ) != 0
+            }
+        }
+
+        let xkb = setup_xkb_extension(
+            &conn,
+            xkb::x11::MIN_MAJOR_XKB_VERSION,
+            xkb::x11::MIN_MINOR_XKB_VERSION,
+            xkbcommon_sys::XKB_X11_SETUP_XKB_EXTENSION_NO_FLAGS,
+            &mut major,
+            &mut minor,
+            &mut event_out,
+            &mut error_out,
+        );
+
+        let cookie = xproto::change_window_attributes_checked(
+            &conn,
+            root,
+            &[(
+                xcb::CW_EVENT_MASK,
+                xproto::EVENT_MASK_SUBSTRUCTURE_REDIRECT
+                    | xproto::EVENT_MASK_STRUCTURE_NOTIFY
+                    | xproto::EVENT_MASK_SUBSTRUCTURE_NOTIFY
+                    | xproto::EVENT_MASK_PROPERTY_CHANGE
+                    | xproto::EVENT_MASK_BUTTON_PRESS
+                    | xproto::EVENT_MASK_BUTTON_RELEASE
+                    | xproto::EVENT_MASK_POINTER_MOTION
+                    | xproto::EVENT_MASK_FOCUS_CHANGE
+                    | xproto::EVENT_MASK_ENTER_WINDOW
+                    | xproto::EVENT_MASK_LEAVE_WINDOW
+                    | xproto::EVENT_MASK_KEY_PRESS,
+            )],
+        );
+
+        cookie
+            .request_check()
+            .expect("Failed to select xcb events. Other window manager running?");
+
+        {
+            let map_parts = xcb::xkb::MAP_PART_KEY_TYPES
+                | xcb::xkb::MAP_PART_KEY_SYMS
+                | xcb::xkb::MAP_PART_MODIFIER_MAP
+                | xcb::xkb::MAP_PART_EXPLICIT_COMPONENTS
+                | xcb::xkb::MAP_PART_KEY_ACTIONS
+                | xcb::xkb::MAP_PART_KEY_BEHAVIORS
+                | xcb::xkb::MAP_PART_VIRTUAL_MODS
+                | xcb::xkb::MAP_PART_VIRTUAL_MOD_MAP;
+
+            let events = xcb::xkb::EVENT_TYPE_NEW_KEYBOARD_NOTIFY
+                | xcb::xkb::EVENT_TYPE_MAP_NOTIFY
+                | xcb::xkb::EVENT_TYPE_STATE_NOTIFY;
+
+            let cookie = xcb::xkb::select_events_checked(
+                &conn,
+                xcb::xkb::ID_USE_CORE_KBD as u16,
+                events as u16,
+                0,
+                events as u16,
+                map_parts as u16,
+                map_parts as u16,
+                None,
+            );
+
+            cookie
+                .request_check()
+                .expect("failed to select notify events from xcb xkb");
+        }
+
+        let mut xkb_context = xkb::Context::default();
+        xkb_context.log().level(xkb::LogLevel::Debug).verbosity(10);
+
+        let device_id = xkb::x11::device(&conn).expect("Expected core device id");
+        let keymap = xkb::x11::keymap(
+            &conn,
+            device_id,
+            &xkb_context,
+            xkb::keymap::compile::NO_FLAGS,
+        )
+        .expect("Expect keymap");
+
+        info!("Keymap modifiers");
+        for modifier in keymap.mods().iter() {
+            info!("Mod {:?}", modifier);
+        }
+
+        let state = xkb::x11::state(&conn, device_id, &keymap).expect("Expect device state");
+
+        Self {
+            conn,
+            root,
+            xkb_base_event: first_event,
+            xkb_context,
+            xkb_keymap: keymap,
+            xkb_state: state,
+        }
+    }
+
+    fn run(&self) {
+        loop {
+            let event = self.conn.wait_for_event();
+            match event {
+                None => {
+                    break;
+                }
+                Some(event) => {
+                    self.handle_xcb_event(&event);
+                }
+            }
+        }
+    }
+
+    fn handle_xcb_event(&self, event: &xcb::GenericEvent) {
+        let r = event.response_type() & !0x80;
+        match r {
+            xcb::CONFIGURE_REQUEST => {
+                let event: &xcb::ConfigureRequestEvent = unsafe { xcb::cast_event(&event) };
+                trace!("ConfigureRequest WindowId: {:?}", event.window());
+                let cookie = xproto::configure_window_checked(&self.conn, event.window(), &[]);
+
+                let result = cookie.request_check();
+                if result.is_err() {
+                    panic!("ConfigureRequest failed {:?}", result);
+                }
+            }
+            xcb::MAP_REQUEST => {
+                let event: &xcb::MapRequestEvent = unsafe { xcb::cast_event(&event) };
+                trace!("MapRequest WindowId: {:?}", event.window());
+                let cookie: xcb::base::VoidCookie<'_> =
+                    xproto::map_window_checked(&self.conn, event.window());
+
+                let result = cookie.request_check();
+                if result.is_err() {
+                    panic!("MapRequest failed {:?}", result);
+                }
+            }
+            xcb::KEY_PRESS => {
+                let key_press: &xcb::KeyPressEvent = unsafe { xcb::cast_event(&event) };
+                let keycode: xproto::Keycode = key_press.detail();
+                let keysym = self.xkb_state.key(keycode).sym();
+
+                trace!(
+                    "Key pressed (code: {}, sym: {:?}, utf-8: {:?}, mods: {:?}, {:?})",
+                    key_press.detail(),
+                    keysym,
+                    keysym.map(|s| s.utf8()),
+                    self.xkb_state
+                        .mods()
+                        .active(0, xkb::state::Components::MODS_DEPRESSED),
+                    self.xkb_state
+                        .mods()
+                        .active(0, xkb::state::Components::MODS_EFFECTIVE)
+                );
+
+                let rofi_key = xkb::Keysym::from(xkbcommon_sys::XKB_KEY_f);
+                if let Some(keysym) = keysym {
+                    if keysym == rofi_key {
+                        let _ = std::process::Command::new("rofi")
+                            .arg("-show")
+                            .arg("run")
+                            .spawn();
+                    }
+                }
+            }
+            xcb::MAP_NOTIFY => trace!("Map notification"),
+            xcb::UNMAP_NOTIFY => trace!("Unmap notification"),
+            xcb::MOTION_NOTIFY => {}
+            xcb::MAPPING_NOTIFY => trace!("Mapping notification"),
+            xcb::CONFIGURE_NOTIFY => trace!("Configure notification"),
+            xcb::CREATE_NOTIFY => trace!("Create notification"),
+            xcb::DESTROY_NOTIFY => trace!("Destroy notification"),
+            xcb::PROPERTY_NOTIFY => trace!("Property notification"),
+            xcb::ENTER_NOTIFY => trace!("Enter notification"),
+            xcb::LEAVE_NOTIFY => trace!("Leave notification"),
+            xcb::FOCUS_IN => trace!("Focus in event"),
+            xcb::FOCUS_OUT => trace!("Focus out event"),
+            xcb::CLIENT_MESSAGE => trace!("Client message"),
+            _ => {
+                if r == self.xkb_base_event {
+                    self.handle_xkb_event(event);
+                } else {
+                    warn!("Unsupported event: {}", r);
+                }
+            }
+        }
+    }
+
+    fn handle_xkb_event(&self, event: &xcb::GenericEvent) {
+        let xkb_event_type = unsafe { (*event.ptr).pad0 };
+
+        match xkb_event_type {
+            xcb::xkb::NEW_KEYBOARD_NOTIFY => {
+                trace!("TODO XKB New keyboard notification");
+            }
+            xcb::xkb::MAP_NOTIFY => {
+                trace!("TODO XKB Map notification");
+            }
+            xcb::xkb::STATE_NOTIFY => {
+                trace!("XKB State notification");
+                let state_notify: &xcb::xkb::StateNotifyEvent = unsafe { xcb::cast_event(&event) };
+
+                self.xkb_state.clone().update().mask(
+                    state_notify.base_mods(),
+                    state_notify.latched_mods(),
+                    state_notify.locked_mods(),
+                    state_notify.base_group(),
+                    state_notify.latched_group(),
+                    state_notify.locked_group(),
+                );
+            }
+            _ => {
+                warn!("Unsupported xkb event type: {}", xkb_event_type);
+            }
+        }
+    }
+}
+
 fn main() {
-    println!("Hello, world!");
+    env_logger::init();
+    info!("Welcome to {}", env!("CARGO_PKG_NAME"));
+
+    let app = App::new();
+    app.run();
 }

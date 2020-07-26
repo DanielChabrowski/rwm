@@ -4,6 +4,9 @@ version = "0.1.0"
 authors = ["DanielChabrowski <danchabrowski@gmail.com>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
+xcb = { version = "0.9", features = ["xkb"] }
+xkb = { version = "0.2", features = ["x11"] }
+xkbcommon-sys = { version = "0.7", features = ["x11"] }
+log = "0.4"
+env_logger = "0.7"
