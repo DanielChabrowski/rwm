@@ -53,46 +53,6 @@ impl App {
             }
         }
 
-        let mut major: u16 = 0;
-        let mut minor: u16 = 0;
-        let mut event_out: u8 = 0;
-        let mut error_out: u8 = 0;
-
-        pub fn setup_xkb_extension(
-            connection: &xcb::Connection,
-            major_xkb_version: u16,
-            minor_xkb_version: u16,
-            flags: xkbcommon_sys::xkb_x11_setup_xkb_extension_flags,
-            major_xkb_version_out: &mut u16,
-            minor_xkb_version_out: &mut u16,
-            base_event_out: &mut u8,
-            base_error_out: &mut u8,
-        ) -> bool {
-            unsafe {
-                xkbcommon_sys::xkb_x11_setup_xkb_extension(
-                    connection.get_raw_conn() as *mut _,
-                    major_xkb_version,
-                    minor_xkb_version,
-                    flags,
-                    major_xkb_version_out,
-                    minor_xkb_version_out,
-                    base_event_out,
-                    base_error_out,
-                ) != 0
-            }
-        }
-
-        let xkb = setup_xkb_extension(
-            &conn,
-            xkb::x11::MIN_MAJOR_XKB_VERSION,
-            xkb::x11::MIN_MINOR_XKB_VERSION,
-            xkbcommon_sys::XKB_X11_SETUP_XKB_EXTENSION_NO_FLAGS,
-            &mut major,
-            &mut minor,
-            &mut event_out,
-            &mut error_out,
-        );
-
         let cookie = xproto::change_window_attributes_checked(
             &conn,
             root,
