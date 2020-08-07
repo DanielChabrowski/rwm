@@ -66,6 +66,61 @@ fn setup_xkb_extension(conn: &xcb::Connection) -> XkbExtensionData {
     }
 }
 
+fn register_for_xcb_events(conn: &xcb::Connection, root: xcb::Window) {
+    let cookie = xproto::change_window_attributes_checked(
+        &conn,
+        root,
+        &[(
+            xcb::CW_EVENT_MASK,
+            xproto::EVENT_MASK_SUBSTRUCTURE_REDIRECT
+                | xproto::EVENT_MASK_STRUCTURE_NOTIFY
+                | xproto::EVENT_MASK_SUBSTRUCTURE_NOTIFY
+                | xproto::EVENT_MASK_PROPERTY_CHANGE
+                | xproto::EVENT_MASK_BUTTON_PRESS
+                | xproto::EVENT_MASK_BUTTON_RELEASE
+                | xproto::EVENT_MASK_POINTER_MOTION
+                | xproto::EVENT_MASK_FOCUS_CHANGE
+                | xproto::EVENT_MASK_ENTER_WINDOW
+                | xproto::EVENT_MASK_LEAVE_WINDOW
+                | xproto::EVENT_MASK_KEY_PRESS,
+        )],
+    );
+
+    cookie
+        .request_check()
+        .expect("Failed to register for XCB events. Other window manager running?");
+}
+
+fn register_for_xkb_events(conn: &xcb::Connection) {
+    let map_parts = xcb::xkb::MAP_PART_KEY_TYPES
+        | xcb::xkb::MAP_PART_KEY_SYMS
+        | xcb::xkb::MAP_PART_MODIFIER_MAP
+        | xcb::xkb::MAP_PART_EXPLICIT_COMPONENTS
+        | xcb::xkb::MAP_PART_KEY_ACTIONS
+        | xcb::xkb::MAP_PART_KEY_BEHAVIORS
+        | xcb::xkb::MAP_PART_VIRTUAL_MODS
+        | xcb::xkb::MAP_PART_VIRTUAL_MOD_MAP;
+
+    let events = xcb::xkb::EVENT_TYPE_NEW_KEYBOARD_NOTIFY
+        | xcb::xkb::EVENT_TYPE_MAP_NOTIFY
+        | xcb::xkb::EVENT_TYPE_STATE_NOTIFY;
+
+    let cookie = xcb::xkb::select_events_checked(
+        &conn,
+        xcb::xkb::ID_USE_CORE_KBD as u16,
+        events as u16,
+        0,
+        events as u16,
+        map_parts as u16,
+        map_parts as u16,
+        None,
+    );
+
+    cookie
+        .request_check()
+        .expect("Failed to register for XKB events");
+}
+
 impl App {
     fn new() -> Self {
         let (conn, screen_num) =
@@ -74,66 +129,14 @@ impl App {
         let setup = conn.get_setup();
         let screen: xproto::Screen = setup.roots().nth(screen_num as usize).unwrap();
 
-        let root = screen.root();
+        let root: xcb::Window = screen.root();
 
         let xkb_extension_data = setup_xkb_extension(&conn);
 
-        let cookie = xproto::change_window_attributes_checked(
-            &conn,
-            root,
-            &[(
-                xcb::CW_EVENT_MASK,
-                xproto::EVENT_MASK_SUBSTRUCTURE_REDIRECT
-                    | xproto::EVENT_MASK_STRUCTURE_NOTIFY
-                    | xproto::EVENT_MASK_SUBSTRUCTURE_NOTIFY
-                    | xproto::EVENT_MASK_PROPERTY_CHANGE
-                    | xproto::EVENT_MASK_BUTTON_PRESS
-                    | xproto::EVENT_MASK_BUTTON_RELEASE
-                    | xproto::EVENT_MASK_POINTER_MOTION
-                    | xproto::EVENT_MASK_FOCUS_CHANGE
-                    | xproto::EVENT_MASK_ENTER_WINDOW
-                    | xproto::EVENT_MASK_LEAVE_WINDOW
-                    | xproto::EVENT_MASK_KEY_PRESS,
-            )],
-        );
+        register_for_xcb_events(&conn, root);
+        register_for_xkb_events(&conn);
 
-        cookie
-            .request_check()
-            .expect("Failed to select xcb events. Other window manager running?");
-
-        {
-            let map_parts = xcb::xkb::MAP_PART_KEY_TYPES
-                | xcb::xkb::MAP_PART_KEY_SYMS
-                | xcb::xkb::MAP_PART_MODIFIER_MAP
-                | xcb::xkb::MAP_PART_EXPLICIT_COMPONENTS
-                | xcb::xkb::MAP_PART_KEY_ACTIONS
-                | xcb::xkb::MAP_PART_KEY_BEHAVIORS
-                | xcb::xkb::MAP_PART_VIRTUAL_MODS
-                | xcb::xkb::MAP_PART_VIRTUAL_MOD_MAP;
-
-            let events = xcb::xkb::EVENT_TYPE_NEW_KEYBOARD_NOTIFY
-                | xcb::xkb::EVENT_TYPE_MAP_NOTIFY
-                | xcb::xkb::EVENT_TYPE_STATE_NOTIFY;
-
-            let cookie = xcb::xkb::select_events_checked(
-                &conn,
-                xcb::xkb::ID_USE_CORE_KBD as u16,
-                events as u16,
-                0,
-                events as u16,
-                map_parts as u16,
-                map_parts as u16,
-                None,
-            );
-
-            cookie
-                .request_check()
-                .expect("failed to select notify events from xcb xkb");
-        }
-
-        let mut xkb_context = xkb::Context::default();
-        xkb_context.log().level(xkb::LogLevel::Debug).verbosity(10);
-
+        let xkb_context = xkb::Context::default();
         let device_id = xkb::x11::device(&conn).expect("Expected core device id");
         let keymap = xkb::x11::keymap(
             &conn,
