@@ -6,10 +6,64 @@ use xkbcommon_sys;
 struct App {
     conn: xcb::Connection,
     root: xcb::Window,
-    xkb_base_event: u8,
+
+    xkb_extension_data: XkbExtensionData,
     xkb_context: xkb::Context,
     xkb_keymap: xkb::Keymap,
     xkb_state: xkb::State,
+}
+
+struct XkbExtensionData {
+    major: u16,
+    minor: u16,
+    base_event: u8,
+    base_error: u8,
+}
+
+fn setup_xkb_extension(conn: &xcb::Connection) -> XkbExtensionData {
+    conn.prefetch_extension_data(xcb::xkb::id());
+
+    let (base_event, base_error) = match conn.get_extension_data(xcb::xkb::id()) {
+        Some(r) => (r.first_event(), r.first_error()),
+        None => {
+            panic!("XKB extension not supported");
+        }
+    };
+
+    {
+        let cookie = xcb::xkb::use_extension(
+            &conn,
+            xkb::x11::MIN_MAJOR_XKB_VERSION,
+            xkb::x11::MIN_MINOR_XKB_VERSION,
+        );
+
+        match cookie.get_reply() {
+            Ok(r) => {
+                let major = r.server_major();
+                let minor = r.server_minor();
+
+                if r.supported() {
+                    XkbExtensionData {
+                        major,
+                        minor,
+                        base_event,
+                        base_error,
+                    }
+                } else {
+                    panic!(
+                        "Requested XKB version not supported by server. Requested: ({}, {}), server: ({}, {})",
+                        xkb::x11::MIN_MAJOR_XKB_VERSION,
+                        xkb::x11::MIN_MINOR_XKB_VERSION,
+						major,
+						minor,
+                    );
+                }
+            }
+            Err(_) => {
+                panic!("Failure during XKB use_extension");
+            }
+        }
+    }
 }
 
 impl App {
@@ -22,36 +76,7 @@ impl App {
 
         let root = screen.root();
 
-        conn.prefetch_extension_data(xcb::xkb::id());
-
-        let (first_event, _) = match conn.get_extension_data(xcb::xkb::id()) {
-            Some(r) => (r.first_event(), r.first_error()),
-            None => {
-                panic!("could not get xkb extension data");
-            }
-        };
-
-        {
-            let cookie = xcb::xkb::use_extension(
-                &conn,
-                xkb::x11::MIN_MAJOR_XKB_VERSION,
-                xkb::x11::MIN_MINOR_XKB_VERSION,
-            );
-            match cookie.get_reply() {
-                Ok(r) => {
-                    if !r.supported() {
-                        panic!(
-                            "required xcb-xkb-{}-{} is not supported",
-                            xkb::x11::MIN_MAJOR_XKB_VERSION,
-                            xkb::x11::MIN_MINOR_XKB_VERSION
-                        );
-                    }
-                }
-                Err(_) => {
-                    panic!("could not check if xkb is supported");
-                }
-            }
-        }
+        let xkb_extension_data = setup_xkb_extension(&conn);
 
         let cookie = xproto::change_window_attributes_checked(
             &conn,
@@ -128,7 +153,7 @@ impl App {
         Self {
             conn,
             root,
-            xkb_base_event: first_event,
+            xkb_extension_data,
             xkb_context,
             xkb_keymap: keymap,
             xkb_state: state,
@@ -215,7 +240,7 @@ impl App {
             xcb::FOCUS_OUT => trace!("Focus out event"),
             xcb::CLIENT_MESSAGE => trace!("Client message"),
             _ => {
-                if r == self.xkb_base_event {
+                if r == self.xkb_extension_data.base_event {
                     self.handle_xkb_event(event);
                 } else {
                     warn!("Unsupported event: {}", r);
