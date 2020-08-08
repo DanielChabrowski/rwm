@@ -1,4 +1,4 @@
-use log::{info, trace, warn};
+use log::{error, info, trace, warn};
 use xcb::xproto;
 use xkb;
 use xkbcommon_sys;
@@ -183,11 +183,34 @@ impl App {
             xcb::CONFIGURE_REQUEST => {
                 let event: &xcb::ConfigureRequestEvent = unsafe { xcb::cast_event(&event) };
                 trace!("ConfigureRequest WindowId: {:?}", event.window());
-                let cookie = xproto::configure_window_checked(&self.conn, event.window(), &[]);
+
+                let value_mask = event.value_mask();
+                let values = vec![
+                    (xcb::CONFIG_WINDOW_X as u16, event.x() as u32),
+                    (xcb::CONFIG_WINDOW_Y as u16, event.y() as u32),
+                    (xcb::CONFIG_WINDOW_WIDTH as u16, u32::from(event.width())),
+                    (xcb::CONFIG_WINDOW_HEIGHT as u16, u32::from(event.height())),
+                    (
+                        xcb::CONFIG_WINDOW_BORDER_WIDTH as u16,
+                        u32::from(event.border_width()),
+                    ),
+                    (xcb::CONFIG_WINDOW_SIBLING as u16, event.sibling() as u32),
+                    (
+                        xcb::CONFIG_WINDOW_STACK_MODE as u16,
+                        u32::from(event.stack_mode()),
+                    ),
+                ];
+
+                let values: Vec<_> = values
+                    .into_iter()
+                    .filter(|&(mask, _)| mask & value_mask != 0)
+                    .collect();
+
+                let cookie = xproto::configure_window_checked(&self.conn, event.window(), &values);
 
                 let result = cookie.request_check();
                 if result.is_err() {
-                    panic!("ConfigureRequest failed {:?}", result);
+                    error!("ConfigureRequest failed {:?}", result);
                 }
             }
             xcb::MAP_REQUEST => {
@@ -198,7 +221,7 @@ impl App {
 
                 let result = cookie.request_check();
                 if result.is_err() {
-                    panic!("MapRequest failed {:?}", result);
+                    error!("MapRequest failed {:?}", result);
                 }
             }
             xcb::KEY_PRESS => {
