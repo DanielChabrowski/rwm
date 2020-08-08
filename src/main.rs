@@ -13,6 +13,7 @@ struct App {
     xkb_state: xkb::State,
 }
 
+#[derive(Debug)]
 struct XkbExtensionData {
     major: u16,
     minor: u16,
@@ -132,6 +133,7 @@ impl App {
         let root: xcb::Window = screen.root();
 
         let xkb_extension_data = setup_xkb_extension(&conn);
+        info!("{:?}", xkb_extension_data);
 
         register_for_xcb_events(&conn, root);
         register_for_xkb_events(&conn);
