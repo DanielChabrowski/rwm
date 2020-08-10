@@ -244,9 +244,13 @@ impl App {
                         .active(0, xkb::state::Components::MODS_EFFECTIVE)
                 );
 
-                let rofi_key = xkb::Keysym::from(xkbcommon_sys::XKB_KEY_f);
+                let rofi_key = xkb::Keysym::from(xkbcommon_sys::XKB_KEY_d);
+                let modifier = self
+                    .xkb_state
+                    .mods()
+                    .active("Mod4", xkb::state::Components::MODS_EFFECTIVE);
                 if let Some(keysym) = keysym {
-                    if keysym == rofi_key {
+                    if keysym == rofi_key && modifier {
                         let _ = std::process::Command::new("rofi")
                             .arg("-show")
                             .arg("run")
