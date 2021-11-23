@@ -6,13 +6,14 @@ use xcb::{
 };
 use xkbcommon::xkb;
 
+mod keyboard;
+use keyboard::Keyboard;
+
 struct App {
     conn: xcb::Connection,
     root: x::Window,
 
-    xkb_context: xkb::Context,
-    xkb_keymap: xkb::Keymap,
-    xkb_state: xkb::State,
+    keyboard: Keyboard,
 }
 
 fn register_for_xcb_events(conn: &xcb::Connection, root: x::Window) {
@@ -37,24 +38,6 @@ fn register_for_xcb_events(conn: &xcb::Connection, root: x::Window) {
 
     conn.check_request(cookie)
         .expect("Failed to register for XCB events. Other window manager running?");
-}
-
-fn setup_xkbcommon(conn: &xcb::Connection) {
-    let mut major_xkb = 0u16;
-    let mut minor_xkb = 0u16;
-    let mut base_event = 0u8;
-    let mut base_error = 0u8;
-
-    xkb::x11::setup_xkb_extension(
-        &conn,
-        1,
-        0,
-        xkb::x11::SetupXkbExtensionFlags::NoFlags,
-        &mut major_xkb,
-        &mut minor_xkb,
-        &mut base_event,
-        &mut base_error,
-    );
 }
 
 fn register_for_xkb_events(conn: &xcb::Connection) {
@@ -97,26 +80,16 @@ impl App {
         debug!("Root window: {:?}", root);
 
         register_for_xcb_events(&conn, root);
-        setup_xkbcommon(&conn);
+
+        keyboard::setup_xkb_extension(&conn);
         register_for_xkb_events(&conn);
 
-        let xkb_context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        let device_id = xkb::x11::get_core_keyboard_device_id(&conn);
-        let keymap = xkb::x11::keymap_new_from_device(
-            &xkb_context,
-            &conn,
-            device_id,
-            xkb::KEYMAP_COMPILE_NO_FLAGS,
-        );
-
-        let state = xkb::x11::state_new_from_device(&keymap, &conn, device_id);
+        let keyboard = Keyboard::new(&conn);
 
         Self {
             conn,
             root,
-            xkb_context,
-            xkb_keymap: keymap,
-            xkb_state: state,
+            keyboard,
         }
     }
 
@@ -186,25 +159,25 @@ impl App {
             }
             Event::KeyPress(event) => {
                 let keycode: xkb::Keycode = event.detail().into();
-                let keysym = self.xkb_state.key_get_one_sym(keycode);
+                let keysym = self.keyboard.keycode_to_keysym(keycode);
 
-                let mod4_index = self.xkb_keymap.mod_get_index("Mod4");
+                let mod4_index = self.keyboard.get_mod_index("Mod4");
 
                 trace!(
                     "Key pressed (code: {}, sym: {:?}, utf-8: {:?}, mods: {:?}, {:?})",
                     event.detail(),
                     keysym,
-                    self.xkb_state.key_get_utf8(keycode),
-                    self.xkb_state
-                        .mod_index_is_active(mod4_index, xkb::STATE_MODS_DEPRESSED),
-                    self.xkb_state
-                        .mod_index_is_active(mod4_index, xkb::STATE_MODS_EFFECTIVE)
+                    self.keyboard.keycode_to_utf8(keycode),
+                    self.keyboard
+                        .is_mod_active(mod4_index, xkb::STATE_MODS_DEPRESSED),
+                    self.keyboard
+                        .is_mod_active(mod4_index, xkb::STATE_MODS_EFFECTIVE)
                 );
 
                 let rofi_key: xkb::Keysym = xkb::keysyms::KEY_d;
                 let modifier = self
-                    .xkb_state
-                    .mod_index_is_active(mod4_index, xkb::STATE_MODS_EFFECTIVE);
+                    .keyboard
+                    .is_mod_active(mod4_index, xkb::STATE_MODS_EFFECTIVE);
 
                 if keysym == rofi_key && modifier {
                     let _ = std::process::Command::new("rofi")
@@ -222,20 +195,15 @@ impl App {
 
         match event {
             Event::NewKeyboardNotify(event) => {
-                trace!("TODO XKB New keyboard notification {:?}", event);
+                if event.changed().contains(xcb::xkb::NknDetail::KEYCODES) {
+                    self.keyboard.update_keymaps(&self.conn);
+                }
             }
-            Event::MapNotify(event) => {
-                trace!("TODO XKB Map notification {:?}", event);
+            Event::MapNotify(_) => {
+                self.keyboard.update_keymaps(&self.conn);
             }
             Event::StateNotify(event) => {
-                self.xkb_state.update_mask(
-                    event.base_mods().bits(),
-                    event.latched_mods().bits(),
-                    event.locked_mods().bits(),
-                    event.base_group() as u32,
-                    event.latched_group() as u32,
-                    event.locked_group() as u32,
-                );
+                self.keyboard.update_state(event);
             }
             _ => {
                 trace!("Unsupported xkb event type: {:?}", event);
