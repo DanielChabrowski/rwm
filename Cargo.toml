@@ -2,11 +2,10 @@
 name = "rwm"
 version = "0.1.0"
 authors = ["DanielChabrowski <danchabrowski@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
 [dependencies]
-xcb = { version = "0.9", features = ["xkb"] }
-xkb = { version = "0.2", features = ["x11"] }
-xkbcommon-sys = { version = "0.7", features = ["x11"] }
-log = "0.4"
-env_logger = "0.7"
+xcb = { version = "1.0.0-beta", features = ["xkb"] }
+xkbcommon = { version = "0.5.0-beta.0", features = ["x11"] }
+log = "0.4.14"
+env_logger = "0.9.0"
