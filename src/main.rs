@@ -1,22 +1,31 @@
 use log::{debug, error, info, trace};
+use std::collections::HashMap;
 use x::EventMask;
 use xcb::{
     x,
     xkb::{EventType, MapPart},
+    Xid,
 };
 use xkbcommon::xkb;
 
 mod keyboard;
 use keyboard::Keyboard;
 
+#[derive(Debug)]
+struct Client {
+    window: x::Window,
+}
+
 struct App {
     conn: xcb::Connection,
     root: x::Window,
 
     keyboard: Keyboard,
+
+    clients: HashMap<u32, Client>,
 }
 
-fn register_for_xcb_events(conn: &xcb::Connection, root: x::Window) {
+fn register_for_xcb_events(conn: &xcb::Connection, root: x::Window) -> xcb::ProtocolResult<()> {
     let event_mask: xcb::x::EventMask = EventMask::SUBSTRUCTURE_REDIRECT
         | EventMask::STRUCTURE_NOTIFY
         | EventMask::SUBSTRUCTURE_NOTIFY
@@ -37,10 +46,9 @@ fn register_for_xcb_events(conn: &xcb::Connection, root: x::Window) {
     let cookie = conn.send_request_checked(&req);
 
     conn.check_request(cookie)
-        .expect("Failed to register for XCB events. Other window manager running?");
 }
 
-fn register_for_xkb_events(conn: &xcb::Connection) {
+fn register_for_xkb_events(conn: &xcb::Connection) -> xcb::ProtocolResult<()> {
     let map_parts = MapPart::KEY_TYPES
         | MapPart::KEY_SYMS
         | MapPart::MODIFIER_MAP
@@ -63,7 +71,6 @@ fn register_for_xkb_events(conn: &xcb::Connection) {
     });
 
     conn.check_request(cookie)
-        .expect("Failed to register for XKB events");
 }
 
 impl App {
@@ -79,10 +86,11 @@ impl App {
 
         debug!("Root window: {:?}", root);
 
-        register_for_xcb_events(&conn, root);
+        register_for_xcb_events(&conn, root)
+            .expect("Failed to register for XCB events. Other window manager running?");
 
         keyboard::setup_xkb_extension(&conn);
-        register_for_xkb_events(&conn);
+        register_for_xkb_events(&conn).expect("Failed to register for XKB events");
 
         let keyboard = Keyboard::new(&conn);
 
@@ -90,6 +98,7 @@ impl App {
             conn,
             root,
             keyboard,
+            clients: HashMap::new(),
         }
     }
 
@@ -100,7 +109,8 @@ impl App {
                 Ok(event) => {
                     self.handle_xcb_event(event);
                 }
-                Err(_) => {
+                Err(e) => {
+                    error!("Error while waiting for an event: {:?}", e);
                     break;
                 }
             }
@@ -123,8 +133,6 @@ impl App {
 
         match event {
             Event::ConfigureRequest(event) => {
-                trace!("{:?}", event);
-
                 let cookie = self.conn.send_request_checked(&xcb::x::ConfigureWindow {
                     window: event.window(),
                     value_list: &[
@@ -145,6 +153,10 @@ impl App {
                     error!("ConfigureRequest failed {:?}", result);
                 }
             }
+            Event::ConfigureNotify(_) => {}
+            Event::DestroyNotify(event) => {
+                self.clients.remove(&event.window().resource_id());
+            }
             Event::MapRequest(event) => {
                 trace!("MapRequest WindowId: {:?}", event.window());
 
@@ -155,10 +167,21 @@ impl App {
                 let result = self.conn.check_request(cookie);
                 if result.is_err() {
                     error!("MapRequest failed {:?}", result);
+                    return;
                 }
+
+                self.clients.insert(
+                    event.window().resource_id(),
+                    Client {
+                        window: event.window(),
+                    },
+                );
+            }
+            Event::UnmapNotify(_event) => {
+                // Hide the window
             }
             Event::KeyPress(event) => {
-                let keycode: xkb::Keycode = event.detail().into();
+                let keycode = event.detail().into();
                 let keysym = self.keyboard.keycode_to_keysym(keycode);
 
                 let mod4_index = self.keyboard.get_mod_index("Mod4");
@@ -174,7 +197,7 @@ impl App {
                         .is_mod_active(mod4_index, xkb::STATE_MODS_EFFECTIVE)
                 );
 
-                let rofi_key: xkb::Keysym = xkb::keysyms::KEY_d;
+                let rofi_key = xkb::keysyms::KEY_d;
                 let modifier = self
                     .keyboard
                     .is_mod_active(mod4_index, xkb::STATE_MODS_EFFECTIVE);
@@ -186,7 +209,12 @@ impl App {
                         .spawn();
                 }
             }
-            _ => {}
+            Event::MotionNotify(_) => {
+                // We don't want moves to be logged...
+            }
+            e => {
+                trace!("Unhandled event: {:?}", e);
+            }
         }
     }
 
