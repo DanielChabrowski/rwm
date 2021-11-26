@@ -103,6 +103,8 @@ impl App {
     }
 
     fn run(&mut self) {
+        self.grab_keybinds();
+
         loop {
             let event = self.conn.wait_for_event();
             match event {
@@ -182,14 +184,13 @@ impl App {
             }
             Event::KeyPress(event) => {
                 let keycode = event.detail().into();
-                let keysym = self.keyboard.keycode_to_keysym(keycode);
 
-                let mod4_index = self.keyboard.get_mod_index("Mod4");
+                let mod4_index = self.keyboard.get_mod_index(xkb::MOD_NAME_LOGO);
 
                 trace!(
                     "Key pressed (code: {}, sym: {:?}, utf-8: {:?}, mods: {:?}, {:?})",
                     event.detail(),
-                    keysym,
+                    self.keyboard.keycode_to_keysym(keycode),
                     self.keyboard.keycode_to_utf8(keycode),
                     self.keyboard
                         .is_mod_active(mod4_index, xkb::STATE_MODS_DEPRESSED),
@@ -197,12 +198,16 @@ impl App {
                         .is_mod_active(mod4_index, xkb::STATE_MODS_EFFECTIVE)
                 );
 
-                let rofi_key = xkb::keysyms::KEY_d;
+                let rofi_key = self
+                    .keyboard
+                    .keysym_to_keycode(&self.conn, xkb::keysyms::KEY_D)
+                    .unwrap();
+
                 let modifier = self
                     .keyboard
                     .is_mod_active(mod4_index, xkb::STATE_MODS_EFFECTIVE);
 
-                if keysym == rofi_key && modifier {
+                if keycode == rofi_key && modifier {
                     let _ = std::process::Command::new("rofi")
                         .arg("-show")
                         .arg("run")
@@ -211,6 +216,10 @@ impl App {
             }
             Event::MotionNotify(_) => {
                 // We don't want moves to be logged...
+            }
+            Event::MappingNotify(e) => {
+                error!("Keyboard mapping changed? {:?}", e);
+                panic!("Should we handle this?");
             }
             e => {
                 trace!("Unhandled event: {:?}", e);
@@ -224,10 +233,12 @@ impl App {
         match event {
             Event::NewKeyboardNotify(event) => {
                 if event.changed().contains(xcb::xkb::NknDetail::KEYCODES) {
+                    debug!("xkb NewKeyboardNotifyEvent");
                     self.keyboard.update_keymaps(&self.conn);
                 }
             }
             Event::MapNotify(_) => {
+                debug!("xkb MapNotifyEvent");
                 self.keyboard.update_keymaps(&self.conn);
             }
             Event::StateNotify(event) => {
@@ -237,6 +248,36 @@ impl App {
                 trace!("Unsupported xkb event type: {:?}", event);
             }
         }
+    }
+
+    fn grab_keybinds(&mut self) {
+        let numlock_index = self.keyboard.get_mod_index(xkb::MOD_NAME_NUM);
+        let numlock_mask = xcb::x::ModMask::from_bits(1 << numlock_index)
+            .expect("Expected a valid numlock modmask");
+
+        let bind = xcb::x::ModMask::N4;
+        for modifiers in [
+            bind,
+            bind | numlock_mask,
+            bind | xcb::x::ModMask::LOCK,
+            bind | xcb::x::ModMask::LOCK | numlock_mask,
+        ] {
+            let cookie = self.conn.send_request_checked(&xcb::x::GrabKey {
+                owner_events: true,
+                grab_window: self.root,
+                modifiers,
+                key: self
+                    .keyboard
+                    .keysym_to_keycode(&self.conn, xkb::KEY_d)
+                    .unwrap() as u8,
+                pointer_mode: xcb::x::GrabMode::Async,
+                keyboard_mode: xcb::x::GrabMode::Async,
+            });
+
+            self.conn.check_request(cookie).expect("key grabbed");
+        }
+
+        self.conn.flush().expect("Flushed");
     }
 }
 

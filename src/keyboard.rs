@@ -72,6 +72,40 @@ impl Keyboard {
         self.xkb_state = xkb_state;
     }
 
+    pub fn keysym_to_keycode(
+        &mut self,
+        conn: &xcb::Connection,
+        keysym: xkb::Keysym,
+    ) -> Option<xkb::Keycode> {
+        let setup = conn.get_setup();
+        let min_keycode = setup.min_keycode();
+        let max_keycode = setup.max_keycode();
+
+        let cookie = conn.send_request(&xcb::x::GetKeyboardMapping {
+            first_keycode: min_keycode,
+            count: max_keycode - min_keycode + 1,
+        });
+
+        let reply: xcb::x::GetKeyboardMappingReply = conn.wait_for_reply(cookie).unwrap().into();
+        let per = reply.keysyms_per_keycode() as usize;
+        let keysyms = reply.keysyms();
+
+        for col in 0..per {
+            for keycode in min_keycode..=max_keycode {
+                let keysym_group = (keycode - min_keycode) as usize * per;
+
+                match keysyms.get(keysym_group + col) {
+                    Some(ks) if *ks == keysym => {
+                        return Some(keycode as u32);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        return None;
+    }
+
     pub fn get_mod_index<S: Borrow<str> + ?Sized>(&self, name: &S) -> u32 {
         self.xkb_keymap.mod_get_index(name)
     }
