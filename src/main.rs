@@ -2,7 +2,7 @@ use log::{debug, error, info, trace};
 use std::collections::HashMap;
 use x::EventMask;
 use xcb::{
-    x,
+    x::{self, KeyButMask},
     xkb::{EventType, MapPart},
     Xid,
 };
@@ -10,6 +10,15 @@ use xkbcommon::xkb;
 
 mod keyboard;
 use keyboard::Keyboard;
+
+mod commands;
+use commands::RofiCommand;
+
+mod config;
+use config::Config;
+
+mod keybind;
+use keybind::{KeySequence, Keybind};
 
 #[derive(Debug)]
 struct Client {
@@ -19,6 +28,8 @@ struct Client {
 struct App {
     conn: xcb::Connection,
     root: x::Window,
+
+    config: Config,
 
     keyboard: Keyboard,
 
@@ -73,6 +84,17 @@ fn register_for_xkb_events(conn: &xcb::Connection) -> xcb::ProtocolResult<()> {
     conn.check_request(cookie)
 }
 
+fn load_config() -> anyhow::Result<Config> {
+    let mut config = Config::default();
+
+    config.add_keybind(Keybind::new(
+        KeySequence::try_from("M-d").unwrap(),
+        Box::new(RofiCommand),
+    ));
+
+    Ok(config)
+}
+
 impl App {
     fn new() -> Self {
         let (conn, screen_num) =
@@ -92,11 +114,14 @@ impl App {
         keyboard::setup_xkb_extension(&conn);
         register_for_xkb_events(&conn).expect("Failed to register for XKB events");
 
+        let config = load_config().expect("Config loaded");
+
         let keyboard = Keyboard::new(&conn);
 
         Self {
             conn,
             root,
+            config,
             keyboard,
             clients: HashMap::new(),
         }
@@ -183,35 +208,29 @@ impl App {
                 // Hide the window
             }
             Event::KeyPress(event) => {
-                let keycode = event.detail().into();
+                let keycode = event.detail();
 
-                let mod4_index = self.keyboard.get_mod_index(xkb::MOD_NAME_LOGO);
+                let numlock_index = self.keyboard.get_mod_index(xkb::MOD_NAME_NUM);
+                let numlock_mask = KeyButMask::from_bits(1 << numlock_index)
+                    .expect("Expected a valid numlock modmask");
+                let modmask = event.state() - (KeyButMask::LOCK | numlock_mask);
 
                 trace!(
-                    "Key pressed (code: {}, sym: {:?}, utf-8: {:?}, mods: {:?}, {:?})",
-                    event.detail(),
-                    self.keyboard.keycode_to_keysym(keycode),
-                    self.keyboard.keycode_to_utf8(keycode),
-                    self.keyboard
-                        .is_mod_active(mod4_index, xkb::STATE_MODS_DEPRESSED),
-                    self.keyboard
-                        .is_mod_active(mod4_index, xkb::STATE_MODS_EFFECTIVE)
+                    "Key pressed (code: {}, sym: {:?}, utf-8: {:?}, modmask: {:?})",
+                    keycode,
+                    self.keyboard.keycode_to_keysym(keycode.into()),
+                    self.keyboard.keycode_to_utf8(keycode.into()),
+                    modmask
                 );
 
-                let rofi_key = self
-                    .keyboard
-                    .keysym_to_keycode(&self.conn, xkb::keysyms::KEY_D)
-                    .unwrap();
-
-                let modifier = self
-                    .keyboard
-                    .is_mod_active(mod4_index, xkb::STATE_MODS_EFFECTIVE);
-
-                if keycode == rofi_key && modifier {
-                    let _ = std::process::Command::new("rofi")
-                        .arg("-show")
-                        .arg("run")
-                        .spawn();
+                for keybind in &self.config.keybinds {
+                    if keybind.matches(keycode, modmask) {
+                        keybind
+                            .command()
+                            .execute()
+                            .expect("Keybind command executed");
+                        break;
+                    }
                 }
             }
             Event::MotionNotify(_) => {
@@ -235,11 +254,15 @@ impl App {
                 if event.changed().contains(xcb::xkb::NknDetail::KEYCODES) {
                     debug!("xkb NewKeyboardNotifyEvent");
                     self.keyboard.update_keymaps(&self.conn);
+                    self.ungrab_keybinds();
+                    self.grab_keybinds();
                 }
             }
             Event::MapNotify(_) => {
                 debug!("xkb MapNotifyEvent");
                 self.keyboard.update_keymaps(&self.conn);
+                self.ungrab_keybinds();
+                self.grab_keybinds();
             }
             Event::StateNotify(event) => {
                 self.keyboard.update_state(event);
@@ -250,31 +273,57 @@ impl App {
         }
     }
 
+    fn ungrab_keybinds(&self) {
+        let cookie = self.conn.send_request_checked(&xcb::x::UngrabKey {
+            key: xcb::x::Grab::Any as u8,
+            grab_window: self.root,
+            modifiers: xcb::x::ModMask::ANY,
+        });
+
+        self.conn.check_request(cookie).expect("keys ungrabbed");
+        self.conn.flush().expect("Flushed");
+    }
+
     fn grab_keybinds(&mut self) {
         let numlock_index = self.keyboard.get_mod_index(xkb::MOD_NAME_NUM);
         let numlock_mask = xcb::x::ModMask::from_bits(1 << numlock_index)
             .expect("Expected a valid numlock modmask");
 
-        let bind = xcb::x::ModMask::N4;
-        for modifiers in [
-            bind,
-            bind | numlock_mask,
-            bind | xcb::x::ModMask::LOCK,
-            bind | xcb::x::ModMask::LOCK | numlock_mask,
-        ] {
-            let cookie = self.conn.send_request_checked(&xcb::x::GrabKey {
-                owner_events: true,
-                grab_window: self.root,
-                modifiers,
-                key: self
-                    .keyboard
-                    .keysym_to_keycode(&self.conn, xkb::KEY_d)
-                    .unwrap() as u8,
-                pointer_mode: xcb::x::GrabMode::Async,
-                keyboard_mode: xcb::x::GrabMode::Async,
-            });
+        for keybind in &mut self.config.keybinds {
+            let mask =
+                xcb::x::ModMask::from_bits_truncate(keybind.key_sequence().modifiers().bits());
 
-            self.conn.check_request(cookie).expect("key grabbed");
+            let keycodes = self
+                .keyboard
+                .keysym_to_keycodes(&self.conn, keybind.key_sequence().keysym());
+
+            debug!(
+                "Keysym: {:?}, keycodes: {:?}",
+                keybind.key_sequence().keysym(),
+                keycodes
+            );
+
+            for keycode in &keycodes {
+                for modifiers in [
+                    mask,
+                    mask | numlock_mask,
+                    mask | xcb::x::ModMask::LOCK,
+                    mask | xcb::x::ModMask::LOCK | numlock_mask,
+                ] {
+                    let cookie = self.conn.send_request_checked(&xcb::x::GrabKey {
+                        owner_events: true,
+                        grab_window: self.root,
+                        modifiers,
+                        key: *keycode,
+                        pointer_mode: xcb::x::GrabMode::Async,
+                        keyboard_mode: xcb::x::GrabMode::Async,
+                    });
+
+                    self.conn.check_request(cookie).expect("key grabbed");
+                }
+            }
+
+            keybind.update_keycodes(keycodes);
         }
 
         self.conn.flush().expect("Flushed");

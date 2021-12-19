@@ -1,3 +1,4 @@
+use log::debug;
 use std::borrow::Borrow;
 use xkbcommon::xkb;
 
@@ -72,11 +73,11 @@ impl Keyboard {
         self.xkb_state = xkb_state;
     }
 
-    pub fn keysym_to_keycode(
+    pub fn keysym_to_keycodes(
         &mut self,
         conn: &xcb::Connection,
         keysym: xkb::Keysym,
-    ) -> Option<xkb::Keycode> {
+    ) -> Vec<xcb::x::Keycode> {
         let setup = conn.get_setup();
         let min_keycode = setup.min_keycode();
         let max_keycode = setup.max_keycode();
@@ -90,28 +91,34 @@ impl Keyboard {
         let per = reply.keysyms_per_keycode() as usize;
         let keysyms = reply.keysyms();
 
+        let mut keycodes = Vec::new();
+
         for col in 0..per {
             for keycode in min_keycode..=max_keycode {
                 let keysym_group = (keycode - min_keycode) as usize * per;
 
                 match keysyms.get(keysym_group + col) {
                     Some(ks) if *ks == keysym => {
-                        return Some(keycode as u32);
+                        debug!(
+                            "keysym: {:?}, keycode: {:?}, col: {:?} {:?}",
+                            keysym,
+                            keycode,
+                            col,
+                            self.xkb_keymap.mod_get_name(col as u32)
+                        );
+                        keycodes.push(keycode);
                     }
                     _ => {}
                 }
             }
         }
 
-        return None;
+        keycodes.dedup();
+        keycodes
     }
 
     pub fn get_mod_index<S: Borrow<str> + ?Sized>(&self, name: &S) -> u32 {
         self.xkb_keymap.mod_get_index(name)
-    }
-
-    pub fn is_mod_active(&self, index: u32, state_type: xkb::StateComponent) -> bool {
-        self.xkb_state.mod_index_is_active(index, state_type)
     }
 
     pub fn keycode_to_keysym(&self, keycode: xkb::Keycode) -> xkb::Keysym {
