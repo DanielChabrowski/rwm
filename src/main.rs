@@ -1,9 +1,9 @@
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
 use std::collections::HashMap;
 use x::EventMask;
 use xcb::{
     x::{self, KeyButMask},
-    xkb::{EventType, MapPart},
+    xkb::EventType,
     Xid,
 };
 use xkbcommon::xkb;
@@ -51,7 +51,7 @@ fn register_for_xcb_events(conn: &xcb::Connection, root: x::Window) -> xcb::Prot
 
     let req = xcb::x::ChangeWindowAttributes {
         window: root,
-        value_list: &[xcb::x::Cw::EventMask(event_mask.bits())],
+        value_list: &[xcb::x::Cw::EventMask(event_mask)],
     };
 
     let cookie = conn.send_request_checked(&req);
@@ -60,6 +60,7 @@ fn register_for_xcb_events(conn: &xcb::Connection, root: x::Window) -> xcb::Prot
 }
 
 fn register_for_xkb_events(conn: &xcb::Connection) -> xcb::ProtocolResult<()> {
+    use xcb::xkb::MapPart;
     let map_parts = MapPart::KEY_TYPES
         | MapPart::KEY_SYMS
         | MapPart::MODIFIER_MAP
@@ -84,6 +85,25 @@ fn register_for_xkb_events(conn: &xcb::Connection) -> xcb::ProtocolResult<()> {
     conn.check_request(cookie)
 }
 
+fn register_for_randr_events(conn: &xcb::Connection, root: x::Window) -> xcb::ProtocolResult<()> {
+    use xcb::randr::NotifyMask;
+    let notify_mask = NotifyMask::SCREEN_CHANGE
+        | NotifyMask::CRTC_CHANGE
+        | NotifyMask::OUTPUT_CHANGE
+        | NotifyMask::OUTPUT_PROPERTY
+        | NotifyMask::PROVIDER_CHANGE
+        | NotifyMask::PROVIDER_PROPERTY
+        | NotifyMask::RESOURCE_CHANGE
+        | NotifyMask::LEASE;
+
+    let cookie = conn.send_request_checked(&xcb::randr::SelectInput {
+        window: root,
+        enable: notify_mask,
+    });
+
+    conn.check_request(cookie)
+}
+
 fn load_config() -> anyhow::Result<Config> {
     let mut config = Config::default();
 
@@ -97,19 +117,29 @@ fn load_config() -> anyhow::Result<Config> {
 
 impl App {
     fn new() -> Self {
-        let (conn, screen_num) =
-            xcb::Connection::connect_with_extensions(None, &[xcb::Extension::Xkb], &[])
-                .expect("Could not make a xcb connection");
+        let (conn, screen_num) = xcb::Connection::connect_with_extensions(
+            None,
+            &[xcb::Extension::Xkb, xcb::Extension::RandR],
+            &[],
+        )
+        .expect("XCB connection established");
 
         let setup = conn.get_setup();
         let screen = setup.roots().nth(screen_num as usize).unwrap();
 
         let root: x::Window = screen.root();
 
-        debug!("Root window: {:?}", root);
+        debug!(
+            "Root window: {:?}, width: {}px, height: {}px",
+            root,
+            screen.width_in_pixels(),
+            screen.height_in_pixels()
+        );
 
         register_for_xcb_events(&conn, root)
             .expect("Failed to register for XCB events. Other window manager running?");
+
+        register_for_randr_events(&conn, root).expect("Failed to register for XrandR events");
 
         keyboard::setup_xkb_extension(&conn);
         register_for_xkb_events(&conn).expect("Failed to register for XKB events");
@@ -152,6 +182,12 @@ impl App {
             xcb::Event::Xkb(event) => {
                 self.handle_xkb_event(event);
             }
+            xcb::Event::RandR(event) => {
+                self.handle_xrandr_event(event);
+            }
+            xcb::Event::Unknown(event) => {
+                warn!("Unknown event: {:?}", event);
+            }
         }
     }
 
@@ -168,8 +204,7 @@ impl App {
                         x::ConfigWindow::Width(event.width().into()),
                         x::ConfigWindow::Height(event.height().into()),
                         x::ConfigWindow::BorderWidth(event.border_width().into()),
-                        // x::ConfigWindow::Sibling(event.sibling()),
-                        x::ConfigWindow::StackMode(event.stack_mode() as u32),
+                        x::ConfigWindow::StackMode(event.stack_mode()),
                     ],
                 });
 
@@ -269,6 +304,19 @@ impl App {
             }
             _ => {
                 trace!("Unsupported xkb event type: {:?}", event);
+            }
+        }
+    }
+
+    fn handle_xrandr_event(&mut self, event: xcb::randr::Event) {
+        use xcb::randr::Event;
+
+        match event {
+            Event::ScreenChangeNotify(event) => {
+                trace!("{:?}", event);
+            }
+            Event::Notify(event) => {
+                trace!("{:?}", event);
             }
         }
     }
