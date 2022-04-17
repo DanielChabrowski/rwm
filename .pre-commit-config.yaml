@@ -1,19 +1,20 @@
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v4.0.1
+  rev: v4.2.0
   hooks:
   - id: trailing-whitespace
   - id: end-of-file-fixer
+  - id: fix-byte-order-marker
+  - id: check-added-large-files
   - id: check-merge-conflict
   - id: check-json
   - id: check-yaml
-  - id: check-byte-order-marker
+  - id: check-toml
   - id: check-executables-have-shebangs
 - repo: local
   hooks:
-  - id: cargo-format
-    name: Check cargo fmt
-    entry: cargo fmt
-    language: system
+  - id: rustfmt
+    name: format rust code
+    entry: rustfmt
+    language: rust
     types: [rust]
-    pass_filenames: false
