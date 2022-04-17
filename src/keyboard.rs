@@ -9,7 +9,7 @@ pub fn setup_xkb_extension(conn: &xcb::Connection) {
     let mut base_error = 0u8;
 
     xkb::x11::setup_xkb_extension(
-        &conn,
+        conn,
         1,
         0,
         xkb::x11::SetupXkbExtensionFlags::NoFlags,
@@ -26,9 +26,9 @@ fn create_new_xkb_state(
     device_id: i32,
 ) -> (xkb::Keymap, xkb::State) {
     let keymap =
-        xkb::x11::keymap_new_from_device(&context, &conn, device_id, xkb::KEYMAP_COMPILE_NO_FLAGS);
+        xkb::x11::keymap_new_from_device(context, conn, device_id, xkb::KEYMAP_COMPILE_NO_FLAGS);
 
-    let state = xkb::x11::state_new_from_device(&keymap, &conn, device_id);
+    let state = xkb::x11::state_new_from_device(&keymap, conn, device_id);
 
     (keymap, state)
 }
@@ -42,17 +42,17 @@ pub struct Keyboard {
 
 impl Keyboard {
     pub fn new(conn: &xcb::Connection) -> Self {
-        let xkb_device_id = xkb::x11::get_core_keyboard_device_id(&conn);
+        let xkb_device_id = xkb::x11::get_core_keyboard_device_id(conn);
         let xkb_context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
 
         let (xkb_keymap, xkb_state) = create_new_xkb_state(conn, &xkb_context, xkb_device_id);
 
-        return Self {
+        Self {
             xkb_device_id,
             xkb_context,
             xkb_keymap,
             xkb_state,
-        };
+        }
     }
 
     pub fn update_state(&mut self, event: xcb::xkb::StateNotifyEvent) {
@@ -87,7 +87,7 @@ impl Keyboard {
             count: max_keycode - min_keycode + 1,
         });
 
-        let reply: xcb::x::GetKeyboardMappingReply = conn.wait_for_reply(cookie).unwrap().into();
+        let reply: xcb::x::GetKeyboardMappingReply = conn.wait_for_reply(cookie).unwrap();
         let per = reply.keysyms_per_keycode() as usize;
         let keysyms = reply.keysyms();
 

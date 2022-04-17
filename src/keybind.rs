@@ -15,7 +15,7 @@ impl TryFrom<&str> for KeySequence {
         let mut keysym: Option<Keysym> = None;
         let mut modifiers = KeyButMask::empty();
 
-        for part in value.split("-") {
+        for part in value.split('-') {
             if part.len() == 1
                 && part
                     .chars()

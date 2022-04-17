@@ -20,9 +20,8 @@ use config::Config;
 mod keybind;
 use keybind::{KeySequence, Keybind};
 
-#[derive(Debug)]
 struct Client {
-    window: x::Window,
+    _window: x::Window,
 }
 
 struct App {
@@ -196,6 +195,8 @@ impl App {
 
         match event {
             Event::ConfigureRequest(event) => {
+                trace!("{:?}", event);
+
                 let cookie = self.conn.send_request_checked(&xcb::x::ConfigureWindow {
                     window: event.window(),
                     value_list: &[
@@ -215,7 +216,12 @@ impl App {
                     error!("ConfigureRequest failed {:?}", result);
                 }
             }
-            Event::ConfigureNotify(_) => {}
+            Event::ConfigureNotify(event) => {
+                trace!("{:?}", event);
+            }
+            Event::CreateNotify(event) => {
+                trace!("{:?}", event);
+            }
             Event::DestroyNotify(event) => {
                 self.clients.remove(&event.window().resource_id());
             }
@@ -235,11 +241,15 @@ impl App {
                 self.clients.insert(
                     event.window().resource_id(),
                     Client {
-                        window: event.window(),
+                        _window: event.window(),
                     },
                 );
             }
-            Event::UnmapNotify(_event) => {
+            Event::ClientMessage(event) => {
+                trace!("{:?}", event);
+            }
+            Event::MapNotify(_) => {}
+            Event::UnmapNotify(_) => {
                 // Hide the window
             }
             Event::KeyPress(event) => {
@@ -275,6 +285,8 @@ impl App {
                 error!("Keyboard mapping changed? {:?}", e);
                 panic!("Should we handle this?");
             }
+            Event::EnterNotify(_) => {}
+            Event::LeaveNotify(_) => {}
             e => {
                 trace!("Unhandled event: {:?}", e);
             }
