@@ -15,6 +15,7 @@ repos:
   hooks:
   - id: rustfmt
     name: format rust code
-    entry: rustfmt
+    entry: cargo fmt
     language: rust
     types: [rust]
+    pass_filenames: false
