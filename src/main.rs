@@ -221,6 +221,13 @@ impl App {
             }
             Event::CreateNotify(event) => {
                 trace!("{:?}", event);
+
+                self.clients.insert(
+                    event.window().resource_id(),
+                    Client {
+                        _window: event.window(),
+                    },
+                );
             }
             Event::DestroyNotify(event) => {
                 self.clients.remove(&event.window().resource_id());
@@ -237,13 +244,6 @@ impl App {
                     error!("MapRequest failed {:?}", result);
                     return;
                 }
-
-                self.clients.insert(
-                    event.window().resource_id(),
-                    Client {
-                        _window: event.window(),
-                    },
-                );
             }
             Event::ClientMessage(event) => {
                 trace!("{:?}", event);
